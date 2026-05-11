@@ -3,6 +3,7 @@ package main
 import (
 	"net/netip"
 	"sync/atomic"
+	"time"
 
 	docker "github.com/fsouza/go-dockerclient"
 	"go.uber.org/zap"
@@ -27,18 +28,29 @@ func dockerListen() (e error) {
 	if dockerClient, e = docker.NewClientFromEnv(); e != nil {
 		return e
 	}
-	events := make(chan *docker.APIEvents, 64)
-	if e = dockerClient.AddEventListenerWithOptions(docker.EventsOptions{
-		Filters: map[string][]string{
-			"type":    {"network"},
-			"event":   {"connect", "disconnect"},
-			"network": dockerNetworks,
-		},
-	}, events); e != nil {
-		return e
-	}
+	go dockerEventLoop()
+	return nil
+}
 
-	go func() {
+// dockerEventLoop runs the Docker network event listener and automatically
+// reconnects if the event stream is closed (e.g. Docker daemon restart).
+func dockerEventLoop() {
+	const reconnectDelay = 5 * time.Second
+	for {
+		events := make(chan *docker.APIEvents, 64)
+		if e := dockerClient.AddEventListenerWithOptions(docker.EventsOptions{
+			Filters: map[string][]string{
+				"type":    {"network"},
+				"event":   {"connect", "disconnect"},
+				"network": dockerNetworks,
+			},
+		}, events); e != nil {
+			dockerLogger.Warn("AddEventListener error, will retry",
+				zap.Error(e), zap.Duration("delay", reconnectDelay))
+			time.Sleep(reconnectDelay)
+			continue
+		}
+
 		for _, network := range dockerNetworks {
 			dockerRefreshNetwork(network, func(string) bool { return true })
 		}
@@ -47,9 +59,11 @@ func dockerListen() (e error) {
 			dockerRefreshNetwork(evt.Actor.Attributes["name"],
 				func(ct string) bool { return ct == ctID })
 		}
-	}()
 
-	return nil
+		dockerLogger.Warn("Docker event stream closed, reconnecting",
+			zap.Duration("delay", reconnectDelay))
+		time.Sleep(reconnectDelay)
+	}
 }
 
 func dockerRefreshNetwork(name string, isNewContainer func(ctID string) bool) {

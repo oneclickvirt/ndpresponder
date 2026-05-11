@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"net"
 	"net/netip"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/afpacket"
@@ -78,6 +81,9 @@ var app = &cli.App{
 		return nil
 	},
 	Action: func(c *cli.Context) error {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+
 		hi, e := gatherHostInfo()
 		if e != nil {
 			return cli.Exit(e, 1)
@@ -102,6 +108,9 @@ var app = &cli.App{
 	L:
 		for {
 			select {
+			case <-ctx.Done():
+				return nil
+
 			case ns, ok := <-solicitations:
 				if !ok {
 					return nil
@@ -122,7 +131,9 @@ var app = &cli.App{
 					continue L
 				}
 				logEntry.Info("RESPOND")
-				handle.WritePacketData(sbuf.Bytes())
+				if err := handle.WritePacketData(sbuf.Bytes()); err != nil {
+					logEntry.Warn("WritePacketData error", zap.Error(err))
+				}
 
 			case ip := <-dockerNewIP:
 				logEntry := logger.With(zap.Stringer("ip", ip))
@@ -131,7 +142,9 @@ var app = &cli.App{
 					continue L
 				}
 				logEntry.Info("GRATUITOUS")
-				handle.WritePacketData(sbuf.Bytes())
+				if err := handle.WritePacketData(sbuf.Bytes()); err != nil {
+					logEntry.Warn("WritePacketData error", zap.Error(err))
+				}
 
 				if !hi.GatewayIP.IsValid() {
 					break
@@ -141,7 +154,9 @@ var app = &cli.App{
 					continue L
 				}
 				logEntry.Info("SOLICIT")
-				handle.WritePacketData(sbuf.Bytes())
+				if err := handle.WritePacketData(sbuf.Bytes()); err != nil {
+					logEntry.Warn("WritePacketData error", zap.Error(err))
+				}
 			}
 		}
 	},
@@ -154,5 +169,7 @@ var app = &cli.App{
 }
 
 func main() {
-	app.Run(os.Args)
+	if err := app.Run(os.Args); err != nil {
+		os.Exit(1)
+	}
 }

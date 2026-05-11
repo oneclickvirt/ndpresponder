@@ -1,4 +1,4 @@
-module github.com/yoursunny/ndpresponder
+module github.com/oneclickvirt/ndpresponder
 
 go 1.26
 

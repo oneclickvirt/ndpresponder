@@ -17,6 +17,10 @@ type HostInfo struct {
 	GatewayIP netip.Addr
 }
 
+// maxGatewayRetries is the maximum number of attempts to resolve the gateway
+// neighbor cache entry before giving up (one attempt per second).
+const maxGatewayRetries = 30
+
 func gatherHostInfo() (hi HostInfo, e error) {
 	logEntry := logger.Named("HostInfo")
 	hi.HostMAC = netif.HardwareAddr
@@ -57,13 +61,22 @@ func gatherHostInfo() (hi HostInfo, e error) {
 	}
 	logEntry.Info("found gateway", zap.Stringer("gateway", hi.GatewayIP))
 
+	// Locate ping at runtime so the binary works on Alpine (/bin/ping)
+	// and standard distros (/usr/bin/ping) alike.
+	pingBin, err := exec.LookPath("ping")
+	if err != nil {
+		pingBin = "/bin/ping" // best-effort fallback
+	}
+
 	var gatewayNeigh *netlink.Neigh
-	for {
-		neighs, e := nl.NeighList(netif.Index, unix.AF_INET6)
-		if e != nil {
-			logEntry.Error("netlink.NeighList error", zap.Error(e))
+	needNoARP := false
+	for attempt := 0; attempt < maxGatewayRetries; attempt++ {
+		neighs, err := nl.NeighList(netif.Index, unix.AF_INET6)
+		if err != nil {
+			logEntry.Error("netlink.NeighList error", zap.Error(err))
 			return hi, nil
 		}
+		done := false
 		for _, neigh := range neighs {
 			ip, _ := netip.AddrFromSlice(neigh.IP)
 			ip = ip.Unmap()
@@ -72,26 +85,33 @@ func gatherHostInfo() (hi HostInfo, e error) {
 			}
 			switch neigh.State {
 			case unix.NUD_REACHABLE, unix.NUD_NOARP:
-				gatewayNeigh = &neigh
-				goto NEIGH_SET
+				n := neigh
+				gatewayNeigh = &n
+				needNoARP = true
+				done = true
 			case unix.NUD_PERMANENT:
-				goto NEIGH_SKIP
+				done = true
 			}
 		}
+		if done {
+			break
+		}
 
-		exec.Command("/usr/bin/ping", "-c", "1", hi.GatewayIP.String()).Run()
-		logEntry.Debug("waiting for gateway neigh entry")
+		exec.Command(pingBin, "-c", "1", hi.GatewayIP.String()).Run()
+		logEntry.Debug("waiting for gateway neigh entry", zap.Int("attempt", attempt+1))
 		time.Sleep(time.Second)
 	}
 
-NEIGH_SET:
-	gatewayNeigh.State = unix.NUD_NOARP
-	if e = nl.NeighSet(gatewayNeigh); e != nil {
-		logEntry.Error("netlink.NeighSet error", zap.Error(e))
-	} else {
-		logEntry.Info("netlink.NeighSet OK", zap.Stringer("lladdr", gatewayNeigh.HardwareAddr))
+	if needNoARP && gatewayNeigh != nil {
+		gatewayNeigh.State = unix.NUD_NOARP
+		if e = nl.NeighSet(gatewayNeigh); e != nil {
+			logEntry.Error("netlink.NeighSet error", zap.Error(e))
+		} else {
+			logEntry.Info("netlink.NeighSet OK", zap.Stringer("lladdr", gatewayNeigh.HardwareAddr))
+		}
+	} else if gatewayNeigh == nil && hi.GatewayIP.IsValid() {
+		logEntry.Warn("gateway neigh entry not found after max retries, proceeding without NUD_NOARP")
 	}
-NEIGH_SKIP:
 
 	return hi, nil
 }

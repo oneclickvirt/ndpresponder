@@ -2,9 +2,7 @@ package main
 
 import (
 	"crypto/rand"
-	"errors"
 	"fmt"
-	"io"
 	"math"
 	"net"
 	"net/netip"
@@ -179,7 +177,8 @@ func CaptureNeighSolicitation(src gopacket.ZeroCopyPacketDataSource) <-chan Neig
 
 		for {
 			pkt, _, e := src.ZeroCopyReadPacketData()
-			if errors.Is(e, io.EOF) {
+			if e != nil {
+				// Any read error (including handle closed) is treated as terminal.
 				close(ch)
 				return
 			}
