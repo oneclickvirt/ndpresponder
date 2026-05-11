@@ -104,9 +104,9 @@ var app = &cli.App{
 			case ns := <-solicitations:
 				logEntry := logger.With(zap.Stringer("ns", ns))
 				switch {
-				case dockerActiveIPs.Contains(ns.TargetIP):
+				case dockerActiveIPs.Load().Contains(ns.TargetIP):
 					logEntry = logEntry.With(zap.String("reason", "docker"))
-				case ns.DestIP.IsMulticast() && targetSubnets.Contains(ns.TargetIP):
+				case targetSubnets.Contains(ns.TargetIP):
 					logEntry = logEntry.With(zap.String("reason", "static"))
 				default:
 					logEntry.Debug("IGNORE")

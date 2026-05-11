@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/netip"
+	"sync/atomic"
 
 	docker "github.com/fsouza/go-dockerclient"
 	"go.uber.org/zap"
@@ -13,9 +14,14 @@ var (
 	dockerNetworks  []string
 	dockerClient    *docker.Client
 	dockerNetIPSets = map[string]*netipx.IPSet{}
-	dockerActiveIPs = &netipx.IPSet{}
 	dockerNewIP     = make(chan netip.Addr, 64)
 )
+
+var dockerActiveIPs atomic.Pointer[netipx.IPSet]
+
+func init() {
+	dockerActiveIPs.Store(new(netipx.IPSet))
+}
 
 func dockerListen() (e error) {
 	if dockerClient, e = docker.NewClientFromEnv(); e != nil {
@@ -78,7 +84,8 @@ func dockerRefreshNetwork(name string, isNewContainer func(ctID string) bool) {
 			b.AddSet(ipset)
 		}
 	}
-	dockerActiveIPs, _ = b.IPSet()
+	newActiveIPs, _ := b.IPSet()
+	dockerActiveIPs.Store(newActiveIPs)
 
 	for _, ip := range newIPs {
 		dockerNewIP <- ip

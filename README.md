@@ -1,52 +1,49 @@
 # IPv6 Neighbor Discovery Responder
 
-[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/yoursunny/ndpresponder/build.yml)](https://github.com/yoursunny/ndpresponder/actions) [![GitHub code size](https://img.shields.io/github/languages/code-size/yoursunny/ndpresponder?style=flat&logo=GitHub)](https://github.com/yoursunny/ndpresponder)
+[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/oneclickvirt/ndpresponder/build.yml)](https://github.com/oneclickvirt/ndpresponder/actions) [![GitHub code size](https://img.shields.io/github/languages/code-size/oneclickvirt/ndpresponder?style=flat&logo=GitHub)](https://github.com/oneclickvirt/ndpresponder)
+
+[中文说明](README_CN.md)
 
 **ndpresponder** is a Go program that listens for ICMPv6 neighbor solicitations on a network interface and responds with neighbor advertisements, as described in [RFC 4861](https://tools.ietf.org/html/rfc4861) - IPv6 Neighbor Discovery Protocol.
 
-This program differs from [ndppd - NDP Proxy Daemon](https://github.com/DanielAdolfsson/ndppd) in that the source IPv6 address of neighbor advertisement is set to the same value as the target address in the neighbor solicitation.
-This change enables **ndpresponder** to work in certain KVM virtual servers where NDP uses link-local addresses but *ebtables* drops outgoing packets from link-local addresses.
-See my [blog post](https://yoursunny.com/t/2021/ndpresponder/) for more information.
+The source IPv6 address of the neighbor advertisement is set to the same value as the target address in the neighbor solicitation.
+This enables **ndpresponder** to work in certain KVM virtual servers where NDP uses link-local addresses but *ebtables* drops outgoing packets from link-local addresses.
+
+Both unicast (`is-alive`) and multicast (`who-has`) neighbor solicitations are handled, so IPv6 addresses remain reachable even after the router's neighbor cache expires.
 
 ## Installation
 
-This program is written in Go.
-You can compile and install this program with:
+This program is written in Go. Compile and install with:
 
 ```bash
-env CGO_ENABLED=0 go install github.com/yoursunny/ndpresponder@main
+env CGO_ENABLED=0 go install github.com/oneclickvirt/ndpresponder@main
 ```
 
-This program is also available as a Docker container:
+Also available as a Docker container:
 
 ```bash
-docker build -t localhost/ndpresponder 'github.com/yoursunny/ndpresponder#main'
-docker run -d --name localhost/ndpresponder --network host ndpresponder [arguments]
+docker build -t localhost/ndpresponder 'github.com/oneclickvirt/ndpresponder#main'
+docker run -d --name ndpresponder --network host localhost/ndpresponder [arguments]
 ```
 
 ## Static Mode
 
-The program can respond to neighbor solicitations for any address under one or more subnets.
-It's recommended to keep the subnets as small as possible.
-
-Sample command:
+The program can respond to neighbor solicitations for any address within one or more subnets.
+Keep subnets as small as possible.
 
 ```bash
 sudo ndpresponder -i eth0 -n 2001:db8:3988:486e:ff2f:add3:31e3:7b00/120
 ```
 
-* `-i` flag specifies the network interface name.
-* `-n` flag specifies the IPv6 subnet to respond to.
-  You may repeat this flag to specify multiple subnets.
+* `-i` specifies the network interface name.
+* `-n` specifies the IPv6 subnet to respond to. Repeat to add multiple subnets.
 
 See [ndpresponder.service](ndpresponder.service) for a sample systemd unit file.
 
 ## Docker Network Mode
 
-The program can respond to neighbor solicitations for assigned addresses in Docker networks.
-When a container connects to a network, it attempts to inform the gateway router about the presence of a new address.
-
-Sample command:
+The program can respond to neighbor solicitations for addresses assigned in Docker networks.
+When a container connects to a network, it notifies the gateway router of the new address.
 
 ```bash
 docker network create --ipv6 --subnet=172.26.0.0/16 \
@@ -60,18 +57,20 @@ docker run -d \
   localhost/ndpresponder -i eth0 -N ipv6exposed
 ```
 
-* `-i` flag specifies the network interface name.
-* `-N` flag specifies the Docker network name.
-  You may repeat this flag to specify multiple networks.
+* `-i` specifies the network interface name.
+* `-N` specifies the Docker network name. Repeat to add multiple networks.
 
 ## Other Options
 
-You may change log level of this program by setting the `NDPRESPONDER_LOG` environment variable.
-Acceptable values are `DEBUG`, `INFO`, `WARN`, `ERROR`, and `FATAL`.
-
-Sample command:
+Set the `NDPRESPONDER_LOG` environment variable to change the log level.
+Acceptable values: `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`.
 
 ```bash
 sudo NDPRESPONDER_LOG=WARN ndpresponder [arguments]
 docker run -e NDPRESPONDER_LOG=WARN [other arguments]
 ```
+
+## Acknowledgements
+
+This project is based on the original work by [yoursunny/ndpresponder](https://github.com/yoursunny/ndpresponder). Thanks for the great foundation.
+
