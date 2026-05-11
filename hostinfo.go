@@ -48,6 +48,7 @@ func gatherHostInfo() (hi HostInfo, e error) {
 		}
 		if maskLen == 0 {
 			hi.GatewayIP, _ = netip.AddrFromSlice(route.Gw)
+			hi.GatewayIP = hi.GatewayIP.Unmap()
 		}
 	}
 	if !hi.GatewayIP.IsValid() {
@@ -65,6 +66,7 @@ func gatherHostInfo() (hi HostInfo, e error) {
 		}
 		for _, neigh := range neighs {
 			ip, _ := netip.AddrFromSlice(neigh.IP)
+			ip = ip.Unmap()
 			if ip != hi.GatewayIP || len(neigh.HardwareAddr) != 6 {
 				continue
 			}

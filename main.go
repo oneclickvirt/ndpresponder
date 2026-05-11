@@ -82,14 +82,15 @@ var app = &cli.App{
 		if e != nil {
 			return cli.Exit(e, 1)
 		}
-		h, e := afpacket.NewTPacket(afpacket.OptInterface(netif.Name))
-		if e != nil {
-			return cli.Exit(e, 1)
+		var e2 error
+		handle, e2 = afpacket.NewTPacket(afpacket.OptInterface(netif.Name))
+		if e2 != nil {
+			return cli.Exit(e2, 1)
 		}
-		if e = h.SetBPF(bpfFilter); e != nil {
-			return cli.Exit(e, 1)
+		if e2 = handle.SetBPF(bpfFilter); e2 != nil {
+			return cli.Exit(e2, 1)
 		}
-		solicitations := CaptureNeighSolicitation(h)
+		solicitations := CaptureNeighSolicitation(handle)
 
 		if len(dockerNetworks) > 0 {
 			if e = dockerListen(); e != nil {
@@ -101,7 +102,10 @@ var app = &cli.App{
 	L:
 		for {
 			select {
-			case ns := <-solicitations:
+			case ns, ok := <-solicitations:
+				if !ok {
+					return nil
+				}
 				logEntry := logger.With(zap.Stringer("ns", ns))
 				switch {
 				case dockerActiveIPs.Load().Contains(ns.TargetIP):
@@ -118,7 +122,7 @@ var app = &cli.App{
 					continue L
 				}
 				logEntry.Info("RESPOND")
-				h.WritePacketData(sbuf.Bytes())
+				handle.WritePacketData(sbuf.Bytes())
 
 			case ip := <-dockerNewIP:
 				logEntry := logger.With(zap.Stringer("ip", ip))
@@ -127,7 +131,7 @@ var app = &cli.App{
 					continue L
 				}
 				logEntry.Info("GRATUITOUS")
-				h.WritePacketData(sbuf.Bytes())
+				handle.WritePacketData(sbuf.Bytes())
 
 				if !hi.GatewayIP.IsValid() {
 					break
@@ -137,7 +141,7 @@ var app = &cli.App{
 					continue L
 				}
 				logEntry.Info("SOLICIT")
-				h.WritePacketData(sbuf.Bytes())
+				handle.WritePacketData(sbuf.Bytes())
 			}
 		}
 	},

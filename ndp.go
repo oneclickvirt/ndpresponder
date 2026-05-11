@@ -77,14 +77,15 @@ func Gratuitous(w gopacket.SerializeBuffer, hi HostInfo, targetIP netip.Addr) er
 
 // Solicit creates an ICMPv6 neighbor solicitation packet.
 func Solicit(w gopacket.SerializeBuffer, hi HostInfo, sourceIP netip.Addr) error {
+	gw16 := hi.GatewayIP.As16()
 	eth := layers.Ethernet{
 		SrcMAC:       hi.HostMAC,
-		DstMAC:       net.HardwareAddr{0x33, 0x33, 0xFF, 0x00, 0x00, 0x01},
+		DstMAC:       net.HardwareAddr{0x33, 0x33, 0xFF, gw16[13], gw16[14], gw16[15]},
 		EthernetType: layers.EthernetTypeIPv6,
 	}
 
 	dstIP := net.IP{0xFF, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-		0x00, 0x00, 0x00, 0x01, 0xFF, 0x00, 0x00, 0x01}
+		0x00, 0x00, 0x00, 0x01, 0xFF, gw16[13], gw16[14], gw16[15]}
 	ip6 := layers.IPv6{
 		Version:    6,
 		SrcIP:      sourceIP.AsSlice(),
@@ -98,8 +99,6 @@ func Solicit(w gopacket.SerializeBuffer, hi HostInfo, sourceIP netip.Addr) error
 	}
 	icmp6.SetNetworkLayerForChecksum(&ip6)
 
-	nonce := make([]byte, 6)
-	rand.Read(nonce)
 	solicit := layers.ICMPv6NeighborSolicitation{
 		TargetAddress: hi.GatewayIP.AsSlice(),
 		Options: layers.ICMPv6Options{
@@ -193,8 +192,11 @@ func CaptureNeighSolicitation(src gopacket.ZeroCopyPacketDataSource) <-chan Neig
 				ns := NeighSolicitation{}
 				copy(ns.RouterMAC[:], eth.SrcMAC)
 				ns.RouterIP, _ = netip.AddrFromSlice(ip6.SrcIP)
+				ns.RouterIP = ns.RouterIP.Unmap()
 				ns.DestIP, _ = netip.AddrFromSlice(ip6.DstIP)
+				ns.DestIP = ns.DestIP.Unmap()
 				ns.TargetIP, _ = netip.AddrFromSlice(solicit.TargetAddress)
+				ns.TargetIP = ns.TargetIP.Unmap()
 				ch <- ns
 			}
 		}

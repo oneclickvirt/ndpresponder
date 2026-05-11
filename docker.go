@@ -38,11 +38,10 @@ func dockerListen() (e error) {
 		return e
 	}
 
-	for _, network := range dockerNetworks {
-		dockerRefreshNetwork(network, func(string) bool { return true })
-	}
-
 	go func() {
+		for _, network := range dockerNetworks {
+			dockerRefreshNetwork(network, func(string) bool { return true })
+		}
 		for evt := range events {
 			ctID := evt.Actor.Attributes["container"]
 			dockerRefreshNetwork(evt.Actor.Attributes["name"],
@@ -64,8 +63,17 @@ func dockerRefreshNetwork(name string, isNewContainer func(ctID string) bool) {
 	var ipAddrs []string
 	var newIPs []netip.Addr
 	for ctID, ct := range network.Containers {
-		prefix, _ := netip.ParsePrefix(ct.IPv6Address)
-		ip := prefix.Addr()
+		if ct.IPv6Address == "" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(ct.IPv6Address)
+		if err != nil {
+			continue
+		}
+		ip := prefix.Addr().Unmap()
+		if !ip.IsValid() {
+			continue
+		}
 		b.Add(ip)
 		ipAddrs = append(ipAddrs, ip.String())
 
@@ -79,15 +87,18 @@ func dockerRefreshNetwork(name string, isNewContainer func(ctID string) bool) {
 	)
 	dockerNetIPSets[network.ID], _ = b.IPSet()
 
-	for net, ipset := range dockerNetIPSets {
-		if net != network.ID {
-			b.AddSet(ipset)
-		}
+	var unionBuilder netipx.IPSetBuilder
+	for _, ipset := range dockerNetIPSets {
+		unionBuilder.AddSet(ipset)
 	}
-	newActiveIPs, _ := b.IPSet()
+	newActiveIPs, _ := unionBuilder.IPSet()
 	dockerActiveIPs.Store(newActiveIPs)
 
 	for _, ip := range newIPs {
-		dockerNewIP <- ip
+		select {
+		case dockerNewIP <- ip:
+		default:
+			dockerLogger.Warn("dockerNewIP channel full, dropping gratuitous", zap.Stringer("ip", ip))
+		}
 	}
 }
