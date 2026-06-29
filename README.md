@@ -32,10 +32,10 @@ The program can respond to neighbor solicitations for any address within one or 
 Keep subnets as small as possible.
 
 ```bash
-sudo ndpresponder -i eth0 -n 2001:db8:3988:486e:ff2f:add3:31e3:7b00/120
+sudo ndpresponder -n 2001:db8:3988:486e:ff2f:add3:31e3:7b00/120
 ```
 
-* `-i` specifies the network interface name.
+* `-i` optionally specifies the uplink network interface name. The default value is `auto`, which selects the interface from the IPv6 default route and falls back to scanning usable interfaces.
 * `-n` specifies the IPv6 subnet to respond to. Repeat to add multiple subnets.
 
 See [ndpresponder.service](ndpresponder.service) for a sample systemd unit file.
@@ -54,10 +54,10 @@ docker run -d \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   --cap-drop=ALL --cap-add=NET_RAW --cap-add=NET_ADMIN \
   --network host --name ndpresponder \
-  localhost/ndpresponder -i eth0 -N ipv6exposed
+  localhost/ndpresponder -N ipv6exposed
 ```
 
-* `-i` specifies the network interface name.
+* `-i` optionally specifies the uplink network interface name. The default value is `auto`, which avoids assuming that the host interface is named `eth0`.
 * `-N` specifies the Docker network name. Repeat to add multiple networks.
 
 ## Other Options

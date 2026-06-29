@@ -4,7 +4,7 @@ After=network-online.target
 
 [Service]
 ExecStartPre=/usr/bin/ip route get 2000::
-ExecStart=/usr/local/bin/ndpresponder -i eth0 -n 2001:db8:3988:486e:ff2f:add3:31e3:7b00/120
+ExecStart=/usr/local/bin/ndpresponder -n 2001:db8:3988:486e:ff2f:add3:31e3:7b00/120
 Restart=on-failure
 RestartSec=10s
 CPUAccounting=yes

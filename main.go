@@ -31,9 +31,10 @@ var logger = func() *zap.Logger {
 }()
 
 var (
-	netif         *net.Interface
-	targetSubnets *netipx.IPSet
-	handle        *afpacket.TPacket
+	netif               *net.Interface
+	targetSubnets       *netipx.IPSet
+	interfaceCandidates []interfaceCandidate
+	handle              *afpacket.TPacket
 )
 
 var app = &cli.App{
@@ -41,10 +42,10 @@ var app = &cli.App{
 	Description: "IPv6 Neighbor Discovery Responder",
 	Flags: []cli.Flag{
 		&cli.StringFlag{
-			Name:     "ifname",
-			Aliases:  []string{"i"},
-			Usage:    "uplink network interface",
-			Required: true,
+			Name:    "ifname",
+			Aliases: []string{"i"},
+			Usage:   "uplink network interface, or auto to detect it",
+			Value:   autoIfname,
 		},
 		&cli.StringSliceFlag{
 			Name:    "subnet",
@@ -59,10 +60,6 @@ var app = &cli.App{
 	},
 	HideHelpCommand: true,
 	Before: func(c *cli.Context) (e error) {
-		if netif, e = net.InterfaceByName(c.String("ifname")); e != nil {
-			return cli.Exit(e, 1)
-		}
-
 		var ipset netipx.IPSetBuilder
 		for _, subnet := range c.StringSlice("subnet") {
 			prefix, e := netip.ParsePrefix(subnet)
@@ -78,24 +75,23 @@ var app = &cli.App{
 
 		dockerNetworks = c.StringSlice("docker-network")
 
+		if interfaceCandidates, e = resolveInterfaceCandidates(c.String("ifname")); e != nil {
+			return cli.Exit(e, 1)
+		}
+
 		return nil
 	},
 	Action: func(c *cli.Context) error {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 
-		hi, e := gatherHostInfo()
+		rt, e := prepareResponder(interfaceCandidates)
 		if e != nil {
 			return cli.Exit(e, 1)
 		}
-		var e2 error
-		handle, e2 = afpacket.NewTPacket(afpacket.OptInterface(netif.Name))
-		if e2 != nil {
-			return cli.Exit(e2, 1)
-		}
-		if e2 = handle.SetBPF(bpfFilter); e2 != nil {
-			return cli.Exit(e2, 1)
-		}
+		netif = rt.netif
+		hi := rt.hi
+		handle = rt.handle
 		solicitations := CaptureNeighSolicitation(handle)
 
 		if len(dockerNetworks) > 0 {

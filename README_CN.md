@@ -30,10 +30,10 @@ docker run -d --name ndpresponder --network host localhost/ndpresponder [参数]
 程序可对一个或多个子网内的任意地址响应邻居请求，建议将子网范围尽量缩小。
 
 ```bash
-sudo ndpresponder -i eth0 -n 2001:db8:3988:486e:ff2f:add3:31e3:7b00/120
+sudo ndpresponder -n 2001:db8:3988:486e:ff2f:add3:31e3:7b00/120
 ```
 
-* `-i` 指定网络接口名称。
+* `-i` 可选指定上联网卡名称。默认值为 `auto`，程序会优先根据 IPv6 默认路由选择接口，失败时再扫描可用接口。
 * `-n` 指定需要响应的 IPv6 子网，可重复使用以指定多个子网。
 
 systemd 单元文件示例参见 [ndpresponder.service](ndpresponder.service)。
@@ -51,10 +51,10 @@ docker run -d \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   --cap-drop=ALL --cap-add=NET_RAW --cap-add=NET_ADMIN \
   --network host --name ndpresponder \
-  localhost/ndpresponder -i eth0 -N ipv6exposed
+  localhost/ndpresponder -N ipv6exposed
 ```
 
-* `-i` 指定网络接口名称。
+* `-i` 可选指定上联网卡名称。默认值为 `auto`，避免假设宿主机接口一定叫 `eth0`。
 * `-N` 指定 Docker 网络名称，可重复使用以指定多个网络。
 
 ## 其他选项

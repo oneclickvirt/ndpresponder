@@ -3,7 +3,6 @@ package main
 import (
 	"net"
 	"net/netip"
-	"os/exec"
 	"time"
 
 	"github.com/vishvananda/netlink"
@@ -20,8 +19,9 @@ type HostInfo struct {
 // maxGatewayRetries is the maximum number of attempts to resolve the gateway
 // neighbor cache entry before giving up (one attempt per second).
 const maxGatewayRetries = 30
+const gatewayProbeTimeout = time.Second
 
-func gatherHostInfo() (hi HostInfo, e error) {
+func gatherHostInfo(netif *net.Interface) (hi HostInfo, e error) {
 	logEntry := logger.Named("HostInfo")
 	hi.HostMAC = netif.HardwareAddr
 	logEntry.Info("found MAC", zap.Stringer("mac", hi.HostMAC))
@@ -50,9 +50,10 @@ func gatherHostInfo() (hi HostInfo, e error) {
 		if route.Dst != nil {
 			maskLen, _ = route.Dst.Mask.Size()
 		}
-		if maskLen == 0 {
-			hi.GatewayIP, _ = netip.AddrFromSlice(route.Gw)
-			hi.GatewayIP = hi.GatewayIP.Unmap()
+		if maskLen == 0 && route.Gw != nil {
+			if gateway, ok := netip.AddrFromSlice(route.Gw); ok {
+				hi.GatewayIP = gateway.Unmap()
+			}
 		}
 	}
 	if !hi.GatewayIP.IsValid() {
@@ -60,13 +61,6 @@ func gatherHostInfo() (hi HostInfo, e error) {
 		return hi, nil
 	}
 	logEntry.Info("found gateway", zap.Stringer("gateway", hi.GatewayIP))
-
-	// Locate ping at runtime so the binary works on Alpine (/bin/ping)
-	// and standard distros (/usr/bin/ping) alike.
-	pingBin, err := exec.LookPath("ping")
-	if err != nil {
-		pingBin = "/bin/ping" // best-effort fallback
-	}
 
 	var gatewayNeigh *netlink.Neigh
 	needNoARP := false
@@ -97,7 +91,7 @@ func gatherHostInfo() (hi HostInfo, e error) {
 			break
 		}
 
-		exec.Command(pingBin, "-c", "1", hi.GatewayIP.String()).Run()
+		probeGatewayNeighbor(logEntry, netif, hi.GatewayIP)
 		logEntry.Debug("waiting for gateway neigh entry", zap.Int("attempt", attempt+1))
 		time.Sleep(time.Second)
 	}
@@ -114,4 +108,27 @@ func gatherHostInfo() (hi HostInfo, e error) {
 	}
 
 	return hi, nil
+}
+
+func probeGatewayNeighbor(logEntry *zap.Logger, netif *net.Interface, gateway netip.Addr) {
+	if !gateway.IsValid() || !gateway.Is6() {
+		return
+	}
+
+	host := gateway.String()
+	if gateway.IsLinkLocalUnicast() && netif != nil && netif.Name != "" {
+		host += "%" + netif.Name
+	}
+	target := net.JoinHostPort(host, "9")
+
+	conn, err := (&net.Dialer{Timeout: gatewayProbeTimeout}).Dial("udp6", target)
+	if err != nil {
+		logEntry.Debug("gateway probe error", zap.String("target", target), zap.Error(err))
+		return
+	}
+	defer conn.Close()
+
+	if _, err := conn.Write([]byte{0}); err != nil {
+		logEntry.Debug("gateway probe write error", zap.String("target", target), zap.Error(err))
+	}
 }
