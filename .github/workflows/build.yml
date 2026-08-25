@@ -12,8 +12,8 @@ jobs:
     env:
       CGO_ENABLED: 0
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - run: go test ./...
@@ -52,36 +52,75 @@ jobs:
             architecture: arm64
             tag_suffix: aarch64
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
       - name: Build an OCI image for platform verification
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: ${{ matrix.platform }}
           outputs: type=oci,dest=/tmp/ndpresponder-${{ matrix.architecture }}.tar
       - name: Verify OCI platform metadata
         shell: bash
+        env:
+          ARCHIVE: /tmp/ndpresponder-${{ matrix.architecture }}.tar
+          EXPECTED_OS: linux
+          EXPECTED_ARCHITECTURE: ${{ matrix.architecture }}
         run: |
           set -euo pipefail
-          archive=/tmp/ndpresponder-${{ matrix.architecture }}.tar
-          index_digest=$(tar -xOf "$archive" index.json | jq -r '.manifests[0].digest')
-          manifest_path="blobs/sha256/${index_digest#sha256:}"
-          config_digest=$(tar -xOf "$archive" "$manifest_path" | jq -r '.config.digest')
-          config_path="blobs/sha256/${config_digest#sha256:}"
-          actual_os=$(tar -xOf "$archive" "$config_path" | jq -r '.os')
-          actual_architecture=$(tar -xOf "$archive" "$config_path" | jq -r '.architecture')
-          test "$actual_os" = linux
-          test "$actual_architecture" = "${{ matrix.architecture }}"
+          python3 - <<'PY'
+          import json
+          import os
+          import tarfile
+
+          archive = os.environ["ARCHIVE"]
+          expected_os = os.environ["EXPECTED_OS"]
+          expected_architecture = os.environ["EXPECTED_ARCHITECTURE"]
+          manifest_media_type = "application/vnd.oci.image.manifest.v1+json"
+          index_media_type = "application/vnd.oci.image.index.v1+json"
+
+          with tarfile.open(archive) as layout:
+              def read_json(path):
+                  member = layout.extractfile(path)
+                  if member is None:
+                      raise RuntimeError(f"OCI layout does not contain {path}")
+                  return json.load(member)
+
+              def read_descriptor(descriptor):
+                  digest = descriptor.get("digest", "")
+                  if not digest.startswith("sha256:"):
+                      raise RuntimeError(f"invalid OCI descriptor digest: {digest!r}")
+                  return read_json(f"blobs/sha256/{digest.removeprefix('sha256:')}")
+
+              def find_manifest(index):
+                  for descriptor in index.get("manifests", []):
+                      media_type = descriptor.get("mediaType", "")
+                      platform = descriptor.get("platform", {})
+                      if media_type == manifest_media_type:
+                          if platform.get("os") == expected_os and platform.get("architecture") == expected_architecture:
+                              return descriptor
+                      elif media_type == index_media_type:
+                          manifest = find_manifest(read_descriptor(descriptor))
+                          if manifest is not None:
+                              return manifest
+                  return None
+
+              manifest = find_manifest(read_json("index.json"))
+              if manifest is None:
+                  raise RuntimeError(f"OCI layout has no {expected_os}/{expected_architecture} image manifest")
+              config = read_descriptor(read_descriptor(manifest).get("config", {}))
+              if config.get("os") != expected_os or config.get("architecture") != expected_architecture:
+                  raise RuntimeError(f"OCI config platform is {config.get('os')}/{config.get('architecture')}, expected {expected_os}/{expected_architecture}")
+          PY
       - name: Log in to Docker Hub
         if: ${{ github.ref == 'refs/heads/main' && env.DOCKERHUB_TOKEN != '' }}
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: spiritlhl
           password: ${{ env.DOCKERHUB_TOKEN }}
       - name: Publish verified platform image
         if: ${{ github.ref == 'refs/heads/main' && env.DOCKERHUB_TOKEN != '' }}
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: ${{ matrix.platform }}

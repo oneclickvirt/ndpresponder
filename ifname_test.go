@@ -36,7 +36,7 @@ func TestResolveInterfaceIncludesRequestedNameFirst(t *testing.T) {
 		return nil, errors.New("no default route")
 	}
 
-	candidates, err := resolveInterfaceCandidatesWith("ens3", provider, routeIndexes)
+	candidates, err := resolveInterfaceCandidatesWithIPv6AddressCheck("ens3", provider, routeIndexes, noIPv6Addresses)
 	if err != nil {
 		t.Fatalf("resolveInterfaceCandidatesWith returned error: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestResolveInterfaceIncludesDefaultIPv6RouteWhenRequestedNameIsWrong(t *tes
 		return []int{7}, nil
 	}
 
-	candidates, err := resolveInterfaceCandidatesWith("eth0", provider, routeIndexes)
+	candidates, err := resolveInterfaceCandidatesWithIPv6AddressCheck("eth0", provider, routeIndexes, noIPv6Addresses)
 	if err != nil {
 		t.Fatalf("resolveInterfaceCandidatesWith returned error: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestResolveInterfaceIncludesInterfaceScanCandidates(t *testing.T) {
 		return nil, errors.New("no default route")
 	}
 
-	candidates, err := resolveInterfaceCandidatesWith(autoIfname, provider, routeIndexes)
+	candidates, err := resolveInterfaceCandidatesWithIPv6AddressCheck(autoIfname, provider, routeIndexes, noIPv6Addresses)
 	if err != nil {
 		t.Fatalf("resolveInterfaceCandidatesWith returned error: %v", err)
 	}
@@ -97,13 +97,37 @@ func TestResolveInterfaceReportsAvailableInterfaces(t *testing.T) {
 		return nil, errors.New("no default route")
 	}
 
-	_, err := resolveInterfaceCandidatesWith(autoIfname, provider, routeIndexes)
+	_, err := resolveInterfaceCandidatesWithIPv6AddressCheck(autoIfname, provider, routeIndexes, noIPv6Addresses)
 	if err == nil {
 		t.Fatal("resolveInterfaceCandidatesWith returned nil error")
 	}
 	if !strings.Contains(err.Error(), "available interfaces: lo") {
 		t.Fatalf("error = %q, want available interface list", err)
 	}
+}
+
+func TestResolveInterfacePrioritizesIPv6AddressCandidates(t *testing.T) {
+	provider := fakeInterfaceProvider{
+		interfaces: []net.Interface{
+			usableInterface("eth1", 3),
+			usableInterface("eth2", 4),
+		},
+	}
+	routeIndexes := func() ([]int, error) {
+		return nil, errors.New("no default route")
+	}
+
+	candidates, err := resolveInterfaceCandidatesWithIPv6AddressCheck(autoIfname, provider, routeIndexes, func(ifi *net.Interface) bool {
+		return ifi != nil && ifi.Name == "eth2"
+	})
+	if err != nil {
+		t.Fatalf("resolveInterfaceCandidatesWithIPv6AddressCheck returned error: %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("candidate count = %d, want 2", len(candidates))
+	}
+	assertCandidate(t, candidates[0], "eth2", "interface-ipv6-address,interface-scan")
+	assertCandidate(t, candidates[1], "eth1", "interface-scan")
 }
 
 func assertCandidate(t *testing.T, candidate interfaceCandidate, name string, reason string) {
@@ -123,4 +147,8 @@ func usableInterface(name string, index int) net.Interface {
 		Flags:        net.FlagUp | net.FlagBroadcast | net.FlagMulticast,
 		HardwareAddr: net.HardwareAddr{0x02, 0x00, 0x00, 0x00, 0x00, byte(index)},
 	}
+}
+
+func noIPv6Addresses(*net.Interface) bool {
+	return false
 }

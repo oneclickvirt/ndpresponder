@@ -36,6 +36,12 @@ func resolveInterfaceCandidates(ifname string) ([]interfaceCandidate, error) {
 }
 
 func resolveInterfaceCandidatesWith(ifname string, ifs interfaceProvider, routeIndexes func() ([]int, error)) ([]interfaceCandidate, error) {
+	return resolveInterfaceCandidatesWithIPv6AddressCheck(ifname, ifs, routeIndexes, interfaceHasIPv6Address)
+}
+
+// resolveInterfaceCandidatesWithIPv6AddressCheck keeps the candidate ordering
+// deterministic in tests while production uses the host interface addresses.
+func resolveInterfaceCandidatesWithIPv6AddressCheck(ifname string, ifs interfaceProvider, routeIndexes func() ([]int, error), hasIPv6Address func(*net.Interface) bool) ([]interfaceCandidate, error) {
 	allInterfaces, err := ifs.Interfaces()
 	if err != nil {
 		return nil, fmt.Errorf("list network interfaces: %w", err)
@@ -83,7 +89,7 @@ func resolveInterfaceCandidatesWith(ifname string, ifs interfaceProvider, routeI
 
 	for i := range allInterfaces {
 		ifi := &allInterfaces[i]
-		if isUsableResponderInterface(ifi) && interfaceHasIPv6Address(ifi) {
+		if isUsableResponderInterface(ifi) && hasIPv6Address != nil && hasIPv6Address(ifi) {
 			addInterfaceCandidate(&candidates, *ifi, "interface-ipv6-address")
 		}
 	}
