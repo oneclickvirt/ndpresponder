@@ -2,14 +2,12 @@ package main
 
 import (
 	"context"
-	"net"
+	"fmt"
 	"net/netip"
 	"os"
 	"os/signal"
-	"syscall"
+	"strings"
 
-	"github.com/gopacket/gopacket"
-	"github.com/gopacket/gopacket/afpacket"
 	"github.com/urfave/cli/v2"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -31,15 +29,14 @@ var logger = func() *zap.Logger {
 }()
 
 var (
-	netif               *net.Interface
 	targetSubnets       *netipx.IPSet
+	staticTargets       []netip.Prefix
 	interfaceCandidates []interfaceCandidate
-	handle              *afpacket.TPacket
 )
 
 var app = &cli.App{
 	Name:        "ndpresponder",
-	Description: "IPv6 Neighbor Discovery Responder",
+	Description: "IPv6 Neighbor Discovery responder (Linux) and proxy manager (macOS/BSD)",
 	Flags: []cli.Flag{
 		&cli.StringFlag{
 			Name:    "ifname",
@@ -50,23 +47,39 @@ var app = &cli.App{
 		&cli.StringSliceFlag{
 			Name:    "subnet",
 			Aliases: []string{"n"},
-			Usage:   "static target subnet",
+			Usage:   "static IPv6 target subnet (/128 targets only on macOS and BSD proxy hosts)",
 		},
 		&cli.StringSliceFlag{
 			Name:    "docker-network",
 			Aliases: []string{"N"},
-			Usage:   "Docker network name",
+			Usage:   "Docker-API-compatible network name (Docker or rootful Podman)",
+		},
+		&cli.StringSliceFlag{
+			Name:    "cni-network",
+			Aliases: []string{"C"},
+			Usage:   "CNI host-local network name or lease directory (for example containerd or nerdctl)",
+		},
+		&cli.StringFlag{
+			Name:  "cni-data-dir",
+			Value: "/var/lib/cni/networks",
+			Usage: "base directory for named CNI host-local leases",
 		},
 	},
 	HideHelpCommand: true,
 	Before: func(c *cli.Context) (e error) {
 		var ipset netipx.IPSetBuilder
+		staticTargets = nil
 		for _, subnet := range c.StringSlice("subnet") {
-			prefix, e := netip.ParsePrefix(subnet)
-			if e != nil {
+			prefix, e := netip.ParsePrefix(strings.TrimSpace(subnet))
+			if e != nil || !prefix.Addr().Is6() {
+				if e == nil {
+					e = fmt.Errorf("static target %q is not an IPv6 prefix", subnet)
+				}
 				return cli.Exit(e, 1)
 			}
+			prefix = prefix.Masked()
 			ipset.AddPrefix(prefix)
+			staticTargets = append(staticTargets, prefix)
 		}
 		targetSubnets, e = ipset.IPSet()
 		if e != nil {
@@ -74,6 +87,8 @@ var app = &cli.App{
 		}
 
 		dockerNetworks = c.StringSlice("docker-network")
+		cniNetworks = c.StringSlice("cni-network")
+		cniDataDir = c.String("cni-data-dir")
 
 		if interfaceCandidates, e = resolveInterfaceCandidates(c.String("ifname")); e != nil {
 			return cli.Exit(e, 1)
@@ -82,83 +97,10 @@ var app = &cli.App{
 		return nil
 	},
 	Action: func(c *cli.Context) error {
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		ctx, stop := signal.NotifyContext(context.Background(), terminationSignals()...)
 		defer stop()
-
-		rt, e := prepareResponder(interfaceCandidates)
-		if e != nil {
-			return cli.Exit(e, 1)
-		}
-		netif = rt.netif
-		hi := rt.hi
-		handle = rt.handle
-		solicitations := CaptureNeighSolicitation(handle)
-
-		if len(dockerNetworks) > 0 {
-			if e = dockerListen(); e != nil {
-				return cli.Exit(e, 1)
-			}
-		}
-
-		sbuf := gopacket.NewSerializeBuffer()
-	L:
-		for {
-			select {
-			case <-ctx.Done():
-				return nil
-
-			case ns, ok := <-solicitations:
-				if !ok {
-					return nil
-				}
-				logEntry := logger.With(zap.Stringer("ns", ns))
-				switch {
-				case dockerActiveIPs.Load().Contains(ns.TargetIP):
-					logEntry = logEntry.With(zap.String("reason", "docker"))
-				case targetSubnets.Contains(ns.TargetIP):
-					logEntry = logEntry.With(zap.String("reason", "static"))
-				default:
-					logEntry.Debug("IGNORE")
-					continue L
-				}
-
-				if e := ns.Respond(sbuf, hi); e != nil {
-					logEntry.Warn("RESPOND error", zap.Error(e))
-					continue L
-				}
-				logEntry.Info("RESPOND")
-				if err := handle.WritePacketData(sbuf.Bytes()); err != nil {
-					logEntry.Warn("WritePacketData error", zap.Error(err))
-				}
-
-			case ip := <-dockerNewIP:
-				logEntry := logger.With(zap.Stringer("ip", ip))
-				if e := Gratuitous(sbuf, hi, ip); e != nil {
-					logEntry.Warn("GRATUITOUS error", zap.Error(e))
-					continue L
-				}
-				logEntry.Info("GRATUITOUS")
-				if err := handle.WritePacketData(sbuf.Bytes()); err != nil {
-					logEntry.Warn("WritePacketData error", zap.Error(err))
-				}
-
-				if !hi.GatewayIP.IsValid() {
-					break
-				}
-				if e := Solicit(sbuf, hi, ip); e != nil {
-					logEntry.Warn("SOLICIT error", zap.Error(e))
-					continue L
-				}
-				logEntry.Info("SOLICIT")
-				if err := handle.WritePacketData(sbuf.Bytes()); err != nil {
-					logEntry.Warn("WritePacketData error", zap.Error(err))
-				}
-			}
-		}
-	},
-	After: func(c *cli.Context) error {
-		if handle != nil {
-			handle.Close()
+		if err := runResponder(ctx); err != nil {
+			return cli.Exit(err, 1)
 		}
 		return nil
 	},
@@ -166,6 +108,7 @@ var app = &cli.App{
 
 func main() {
 	if err := app.Run(os.Args); err != nil {
+		logger.Error("ndpresponder failed", zap.Error(err))
 		os.Exit(1)
 	}
 }

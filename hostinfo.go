@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -9,12 +11,6 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 )
-
-// HostInfo contains address information of the host machine.
-type HostInfo struct {
-	HostMAC   net.HardwareAddr
-	GatewayIP netip.Addr
-}
 
 // maxGatewayRetries is the maximum number of attempts to resolve the gateway
 // neighbor cache entry before giving up (one attempt per second).

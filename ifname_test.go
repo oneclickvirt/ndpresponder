@@ -3,11 +3,8 @@ package main
 import (
 	"errors"
 	"net"
-	"net/netip"
 	"strings"
 	"testing"
-
-	"github.com/vishvananda/netlink"
 )
 
 type fakeInterfaceProvider struct {
@@ -35,11 +32,11 @@ func TestResolveInterfaceIncludesRequestedNameFirst(t *testing.T) {
 	provider := fakeInterfaceProvider{
 		interfaces: []net.Interface{usableInterface("ens3", 2)},
 	}
-	routeGet := func(net.IP) ([]netlink.Route, error) {
+	routeIndexes := func() ([]int, error) {
 		return nil, errors.New("no default route")
 	}
 
-	candidates, err := resolveInterfaceCandidatesWith("ens3", provider, routeGet)
+	candidates, err := resolveInterfaceCandidatesWith("ens3", provider, routeIndexes)
 	if err != nil {
 		t.Fatalf("resolveInterfaceCandidatesWith returned error: %v", err)
 	}
@@ -56,11 +53,11 @@ func TestResolveInterfaceIncludesDefaultIPv6RouteWhenRequestedNameIsWrong(t *tes
 		},
 		interfaces: []net.Interface{usableInterface("docker0", 3)},
 	}
-	routeGet := func(net.IP) ([]netlink.Route, error) {
-		return []netlink.Route{{LinkIndex: 7}}, nil
+	routeIndexes := func() ([]int, error) {
+		return []int{7}, nil
 	}
 
-	candidates, err := resolveInterfaceCandidatesWith("eth0", provider, routeGet)
+	candidates, err := resolveInterfaceCandidatesWith("eth0", provider, routeIndexes)
 	if err != nil {
 		t.Fatalf("resolveInterfaceCandidatesWith returned error: %v", err)
 	}
@@ -76,11 +73,11 @@ func TestResolveInterfaceIncludesInterfaceScanCandidates(t *testing.T) {
 			usableInterface("eth1", 3),
 		},
 	}
-	routeGet := func(net.IP) ([]netlink.Route, error) {
+	routeIndexes := func() ([]int, error) {
 		return nil, errors.New("no default route")
 	}
 
-	candidates, err := resolveInterfaceCandidatesWith(autoIfname, provider, routeGet)
+	candidates, err := resolveInterfaceCandidatesWith(autoIfname, provider, routeIndexes)
 	if err != nil {
 		t.Fatalf("resolveInterfaceCandidatesWith returned error: %v", err)
 	}
@@ -96,29 +93,16 @@ func TestResolveInterfaceReportsAvailableInterfaces(t *testing.T) {
 			{Name: "lo", Index: 1, Flags: net.FlagUp | net.FlagLoopback},
 		},
 	}
-	routeGet := func(net.IP) ([]netlink.Route, error) {
+	routeIndexes := func() ([]int, error) {
 		return nil, errors.New("no default route")
 	}
 
-	_, err := resolveInterfaceCandidatesWith(autoIfname, provider, routeGet)
+	_, err := resolveInterfaceCandidatesWith(autoIfname, provider, routeIndexes)
 	if err == nil {
 		t.Fatal("resolveInterfaceCandidatesWith returned nil error")
 	}
 	if !strings.Contains(err.Error(), "available interfaces: lo") {
 		t.Fatalf("error = %q, want available interface list", err)
-	}
-}
-
-func TestChooseResponderRuntimePrefersIPv6Gateway(t *testing.T) {
-	withoutGateway := &responderRuntime{netif: &net.Interface{Name: "dummy0"}}
-	withGateway := &responderRuntime{
-		netif: &net.Interface{Name: "uplink0"},
-		hi:    HostInfo{GatewayIP: netip.MustParseAddr("2001:db8::1")},
-	}
-
-	selected := chooseResponderRuntime([]*responderRuntime{withoutGateway, withGateway})
-	if selected != withGateway {
-		t.Fatalf("selected %s, want uplink0", selected.netif.Name)
 	}
 }
 

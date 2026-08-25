@@ -6,13 +6,10 @@ import (
 	"net/netip"
 	"strings"
 
-	"github.com/vishvananda/netlink"
 	"go.uber.org/zap"
 )
 
 const autoIfname = "auto"
-
-var defaultIPv6RouteProbe = net.ParseIP("2000::")
 
 type interfaceProvider interface {
 	InterfaceByIndex(index int) (*net.Interface, error)
@@ -35,10 +32,10 @@ func (systemInterfaceProvider) Interfaces() ([]net.Interface, error) {
 }
 
 func resolveInterfaceCandidates(ifname string) ([]interfaceCandidate, error) {
-	return resolveInterfaceCandidatesWith(ifname, systemInterfaceProvider{}, netlink.RouteGet)
+	return resolveInterfaceCandidatesWith(ifname, systemInterfaceProvider{}, defaultIPv6RouteIndexes)
 }
 
-func resolveInterfaceCandidatesWith(ifname string, ifs interfaceProvider, routeGet func(net.IP) ([]netlink.Route, error)) ([]interfaceCandidate, error) {
+func resolveInterfaceCandidatesWith(ifname string, ifs interfaceProvider, routeIndexes func() ([]int, error)) ([]interfaceCandidate, error) {
 	allInterfaces, err := ifs.Interfaces()
 	if err != nil {
 		return nil, fmt.Errorf("list network interfaces: %w", err)
@@ -65,13 +62,13 @@ func resolveInterfaceCandidatesWith(ifname string, ifs interfaceProvider, routeG
 		}
 	}
 
-	if routeGet != nil && defaultIPv6RouteProbe != nil {
-		if routes, err := routeGet(defaultIPv6RouteProbe); err == nil {
-			for _, route := range routes {
-				if route.LinkIndex <= 0 {
+	if routeIndexes != nil {
+		if indexes, err := routeIndexes(); err == nil {
+			for _, index := range indexes {
+				if index <= 0 {
 					continue
 				}
-				ifi, err := ifs.InterfaceByIndex(route.LinkIndex)
+				ifi, err := ifs.InterfaceByIndex(index)
 				if err != nil {
 					continue
 				}
