@@ -6,12 +6,13 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"time"
 
 	"go.uber.org/zap"
 )
 
 func runResponder(ctx context.Context) error {
-	for _, prefix := range staticTargets {
+	for _, prefix := range currentStaticTargets() {
 		if prefix.Bits() != 128 {
 			return fmt.Errorf("macOS and BSD hosts support static NDP proxy targets only as /128 addresses; use -N or -C for dynamic runtime addresses")
 		}
@@ -41,10 +42,17 @@ func runResponder(ctx context.Context) error {
 	if err := responder.Sync(targets); err != nil {
 		return err
 	}
+	targetTicker := time.NewTicker(2 * time.Second)
+	defer targetTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-targetTicker.C:
+			reloadStaticTargetFile()
+			if err := responder.Sync(bsdProxyTargets()); err != nil {
+				logger.Warn("synchronize BSD NDP proxy targets failed", zap.Error(err))
+			}
 		case <-activeIPsChanged:
 			if err := responder.Sync(bsdProxyTargets()); err != nil {
 				logger.Warn("synchronize BSD NDP proxy targets failed", zap.Error(err))
@@ -54,8 +62,9 @@ func runResponder(ctx context.Context) error {
 }
 
 func bsdProxyTargets() []netip.Addr {
-	targets := make([]netip.Addr, 0, len(staticTargets))
-	for _, prefix := range staticTargets {
+	static := currentStaticTargets()
+	targets := make([]netip.Addr, 0, len(static))
+	for _, prefix := range static {
 		targets = append(targets, prefix.Addr())
 	}
 	targets = append(targets, activeAddressSnapshot()...)

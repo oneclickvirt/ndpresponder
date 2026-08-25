@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"time"
 
 	"github.com/gopacket/gopacket"
 	"go.uber.org/zap"
@@ -29,20 +30,25 @@ func runResponder(ctx context.Context) error {
 
 	solicitations := CaptureNeighSolicitation(rt.handle)
 	sbuf := gopacket.NewSerializeBuffer()
+	targetTicker := time.NewTicker(2 * time.Second)
+	defer targetTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-targetTicker.C:
+			reloadStaticTargetFile()
 
 		case ns, ok := <-solicitations:
 			if !ok {
 				return nil
 			}
 			logEntry := logger.With(zap.Stringer("ns", ns))
+			staticTargetSet := currentStaticTargetSet()
 			switch {
 			case activeIPs.Load().Contains(ns.TargetIP):
 				logEntry = logEntry.With(zap.String("reason", "runtime"))
-			case targetSubnets.Contains(ns.TargetIP):
+			case staticTargetSet != nil && staticTargetSet.Contains(ns.TargetIP):
 				logEntry = logEntry.With(zap.String("reason", "static"))
 			default:
 				logEntry.Debug("IGNORE")
