@@ -69,6 +69,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
+          import hashlib
           import json
           import os
           import tarfile
@@ -78,6 +79,7 @@ jobs:
           expected_architecture = os.environ["EXPECTED_ARCHITECTURE"]
           manifest_media_type = "application/vnd.oci.image.manifest.v1+json"
           index_media_type = "application/vnd.oci.image.index.v1+json"
+          config_media_type = "application/vnd.oci.image.config.v1+json"
 
           with tarfile.open(archive) as layout:
               def read_json(path):
@@ -86,21 +88,49 @@ jobs:
                       raise RuntimeError(f"OCI layout does not contain {path}")
                   return json.load(member)
 
-              def read_descriptor(descriptor):
+              def read_descriptor(descriptor, expected_media_types):
+                  if not isinstance(descriptor, dict):
+                      raise RuntimeError(f"invalid OCI descriptor type: {type(descriptor).__name__}")
+                  media_type = descriptor.get("mediaType", "")
+                  if media_type not in expected_media_types:
+                      raise RuntimeError(f"unexpected OCI descriptor media type: {media_type!r}")
                   digest = descriptor.get("digest", "")
-                  if not digest.startswith("sha256:"):
+                  if not isinstance(digest, str) or len(digest) != 71 or not digest.startswith("sha256:") or any(c not in "0123456789abcdef" for c in digest[7:]):
                       raise RuntimeError(f"invalid OCI descriptor digest: {digest!r}")
-                  return read_json(f"blobs/sha256/{digest.removeprefix('sha256:')}")
+                  size = descriptor.get("size")
+                  if not isinstance(size, int) or size <= 0:
+                      raise RuntimeError(f"invalid OCI descriptor size: {size!r}")
+                  path = f"blobs/sha256/{digest.removeprefix('sha256:')}"
+                  try:
+                      member = layout.getmember(path)
+                  except KeyError as error:
+                      raise RuntimeError(f"OCI layout does not contain {path}") from error
+                  if member.size != size:
+                      raise RuntimeError(f"OCI descriptor size mismatch for {path}: {member.size}, expected {size}")
+                  stream = layout.extractfile(member)
+                  if stream is None:
+                      raise RuntimeError(f"OCI layout cannot read {path}")
+                  payload = stream.read()
+                  if hashlib.sha256(payload).hexdigest() != digest.removeprefix('sha256:'):
+                      raise RuntimeError(f"OCI descriptor digest mismatch for {path}")
+                  try:
+                      return json.loads(payload)
+                  except json.JSONDecodeError as error:
+                      raise RuntimeError(f"OCI descriptor {path} is not JSON") from error
 
               def find_manifest(index):
+                  if not isinstance(index, dict) or index.get("schemaVersion") != 2:
+                      raise RuntimeError("invalid OCI image index")
                   for descriptor in index.get("manifests", []):
+                      if not isinstance(descriptor, dict):
+                          raise RuntimeError("invalid OCI image index manifest descriptor")
                       media_type = descriptor.get("mediaType", "")
                       platform = descriptor.get("platform", {})
                       if media_type == manifest_media_type:
                           if platform.get("os") == expected_os and platform.get("architecture") == expected_architecture:
                               return descriptor
                       elif media_type == index_media_type:
-                          manifest = find_manifest(read_descriptor(descriptor))
+                          manifest = find_manifest(read_descriptor(descriptor, {index_media_type}))
                           if manifest is not None:
                               return manifest
                   return None
@@ -108,7 +138,10 @@ jobs:
               manifest = find_manifest(read_json("index.json"))
               if manifest is None:
                   raise RuntimeError(f"OCI layout has no {expected_os}/{expected_architecture} image manifest")
-              config = read_descriptor(read_descriptor(manifest).get("config", {}))
+              image_manifest = read_descriptor(manifest, {manifest_media_type})
+              if image_manifest.get("schemaVersion") != 2:
+                  raise RuntimeError("invalid OCI image manifest")
+              config = read_descriptor(image_manifest.get("config"), {config_media_type})
               if config.get("os") != expected_os or config.get("architecture") != expected_architecture:
                   raise RuntimeError(f"OCI config platform is {config.get('os')}/{config.get('architecture')}, expected {expected_os}/{expected_architecture}")
           PY
