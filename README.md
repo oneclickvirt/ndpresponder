@@ -84,7 +84,7 @@ docker network create --ipv6 --subnet=172.26.0.0/16 \
   --subnet=2001:db8:1972:beb0:dce3:9c1a:d150::/112 ipv6exposed
 
 docker run -d \
-  --restart always --cpus 0.02 --memory 64M \
+  --restart on-failure:3 --cpus 0.02 --memory 64M \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   --cap-drop=ALL --cap-add=NET_RAW --cap-add=NET_ADMIN \
   --network host --name ndpresponder \
