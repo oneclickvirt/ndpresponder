@@ -154,6 +154,32 @@ func TestBSDNDPProxyUplinkRejectsVirtualInterfaces(t *testing.T) {
 	}
 }
 
+func TestBSDProxyTargetsSkipInternalRuntimeAddresses(t *testing.T) {
+	const source = "test:bsd-runtime-address-policy"
+	public := netip.MustParseAddr("2001:db8::40")
+	ula := netip.MustParseAddr("fd42:5339:296f:1d00::f")
+	linkLocal := netip.MustParseAddr("fe80::40")
+	replaceActiveIPSource(source, []netip.Addr{public, ula, linkLocal})
+	t.Cleanup(func() { replaceActiveIPSource(source, nil) })
+
+	targets := bsdProxyTargets()
+	for _, target := range targets {
+		if target == ula || target == linkLocal {
+			t.Fatalf("internal runtime address %s was included in BSD proxy targets: %v", target, targets)
+		}
+	}
+	foundPublic := false
+	for _, target := range targets {
+		if target == public {
+			foundPublic = true
+			break
+		}
+	}
+	if !foundPublic {
+		t.Fatalf("public runtime address %s was not included in BSD proxy targets: %v", public, targets)
+	}
+}
+
 func TestBSDRouteInterfaceFromOutput(t *testing.T) {
 	ifname, err := bsdRouteInterfaceFromOutput("route to: 2001:db8::10\n  interface: en0\n")
 	if err != nil || ifname != "en0" {

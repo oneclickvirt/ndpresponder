@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/urfave/cli/v2"
 	"go.uber.org/zap"
@@ -32,13 +34,17 @@ var logger = func() *zap.Logger {
 }()
 
 var (
-	targetSubnets       *netipx.IPSet
-	staticTargets       []netip.Prefix
-	staticCLITargets    []netip.Prefix
-	interfaceCandidates []interfaceCandidate
-	staticTargetFile    string
-	staticTargetMu      sync.RWMutex
+	targetSubnets         *netipx.IPSet
+	staticTargets         []netip.Prefix
+	staticCLITargets      []netip.Prefix
+	interfaceCandidates   []interfaceCandidate
+	staticTargetFile      string
+	staticTargetMu        sync.RWMutex
+	targetFileReloadEvery = 2 * time.Second
+	responderReadyFile    string
 )
+
+var errStaticTargetFileMissing = errors.New("static target file does not exist")
 
 var app = &cli.App{
 	Name:        "ndpresponder",
@@ -58,6 +64,15 @@ var app = &cli.App{
 		&cli.StringFlag{
 			Name:  "target-file",
 			Usage: "file containing one IPv6 address or prefix per line; reloaded while running",
+		},
+		&cli.DurationFlag{
+			Name:  "target-file-reload-interval",
+			Value: 2 * time.Second,
+			Usage: "poll interval used to reload target-file",
+		},
+		&cli.StringFlag{
+			Name:  "ready-file",
+			Usage: "file to mark after the responder is ready to answer neighbor solicitations",
 		},
 		&cli.StringSliceFlag{
 			Name:    "docker-network",
@@ -80,6 +95,17 @@ var app = &cli.App{
 		staticTargets = nil
 		staticCLITargets = nil
 		staticTargetFile = strings.TrimSpace(c.String("target-file"))
+		responderReadyFile = strings.TrimSpace(c.String("ready-file"))
+		// Clear a marker left by a previous process before any other startup
+		// validation. A failed interface or target-file preflight must never
+		// leave a stale readiness signal for the installer to trust.
+		if err := clearResponderReadyFile(); err != nil {
+			return cli.Exit(err, 1)
+		}
+		targetFileReloadEvery = c.Duration("target-file-reload-interval")
+		if err := validateTargetFileReloadInterval(targetFileReloadEvery); err != nil {
+			return cli.Exit(err, 1)
+		}
 		for _, subnet := range c.StringSlice("subnet") {
 			prefix, e := parseStaticTarget(subnet)
 			if e != nil {
@@ -129,6 +155,13 @@ var app = &cli.App{
 	},
 }
 
+func validateTargetFileReloadInterval(interval time.Duration) error {
+	if interval <= 0 {
+		return fmt.Errorf("target-file-reload-interval must be greater than zero")
+	}
+	return nil
+}
+
 func parseStaticTarget(value string) (netip.Prefix, error) {
 	value = strings.TrimSpace(value)
 	prefix, err := netip.ParsePrefix(value)
@@ -158,10 +191,24 @@ func validateStaticTargetsForPlatform(prefixes []netip.Prefix) error {
 }
 
 func readStaticTargetFile(path string) ([]netip.Prefix, error) {
+	return readStaticTargetFileInternal(path, false)
+}
+
+func readStaticTargetFileForReload(path string) ([]netip.Prefix, error) {
+	// A file-backed target list is commonly updated through a temporary file
+	// or a bind mount. Keep the last valid snapshot during the short interval
+	// in which the path is absent; callers can retry on the next ticker tick.
+	return readStaticTargetFileInternal(path, true)
+}
+
+func readStaticTargetFileInternal(path string, allowMissing bool) ([]netip.Prefix, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			if allowMissing {
+				return nil, errStaticTargetFileMissing
+			}
+			return nil, fmt.Errorf("%w: %q", errStaticTargetFileMissing, path)
 		}
 		return nil, fmt.Errorf("open static target file %q: %w", path, err)
 	}
@@ -190,8 +237,12 @@ func reloadStaticTargetFile() {
 	if staticTargetFile == "" {
 		return
 	}
-	prefixes, err := readStaticTargetFile(staticTargetFile)
+	prefixes, err := readStaticTargetFileForReload(staticTargetFile)
 	if err != nil {
+		if errors.Is(err, errStaticTargetFileMissing) {
+			logger.Debug("static target file is temporarily unavailable", zap.String("file", staticTargetFile))
+			return
+		}
 		logger.Warn("reload static target file failed", zap.String("file", staticTargetFile), zap.Error(err))
 		return
 	}

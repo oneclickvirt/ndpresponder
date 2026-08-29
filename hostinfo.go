@@ -12,10 +12,15 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// maxGatewayRetries is the maximum number of attempts to resolve the gateway
-// neighbor cache entry before giving up (one attempt per second).
-const maxGatewayRetries = 30
-const gatewayProbeTimeout = time.Second
+// Gateway discovery runs during boot while cloud-init/network managers may
+// still be installing the IPv6 default route. Keep the probe bounded so a
+// stale veth can never delay all other candidate interfaces for half a minute.
+const (
+	maxGatewayRouteRetries = 8
+	maxGatewayRetries      = 8
+	gatewayRouteRetryDelay = 250 * time.Millisecond
+	gatewayProbeTimeout    = 500 * time.Millisecond
+)
 
 func gatherHostInfo(netif *net.Interface) (hi HostInfo, e error) {
 	logEntry := logger.Named("HostInfo")
@@ -35,21 +40,18 @@ func gatherHostInfo(netif *net.Interface) (hi HostInfo, e error) {
 		return hi, nil
 	}
 
-	routes, e := nl.RouteList(link, unix.AF_INET6)
-	if e != nil {
-		logEntry.Error("netlink.RouteList error", zap.Error(e))
-		return hi, nil
-	}
-
-	for _, route := range routes {
-		maskLen := 0
-		if route.Dst != nil {
-			maskLen, _ = route.Dst.Mask.Size()
+	for attempt := 0; attempt < maxGatewayRouteRetries; attempt++ {
+		routes, routeErr := nl.RouteList(link, unix.AF_INET6)
+		if routeErr != nil {
+			logEntry.Error("netlink.RouteList error", zap.Error(routeErr))
+			return hi, nil
 		}
-		if maskLen == 0 && route.Gw != nil {
-			if gateway, ok := netip.AddrFromSlice(route.Gw); ok {
-				hi.GatewayIP = gateway.Unmap()
-			}
+		hi.GatewayIP = defaultGateway(routes)
+		if hi.GatewayIP.IsValid() {
+			break
+		}
+		if attempt+1 < maxGatewayRouteRetries {
+			time.Sleep(gatewayRouteRetryDelay)
 		}
 	}
 	if !hi.GatewayIP.IsValid() {
@@ -87,9 +89,11 @@ func gatherHostInfo(netif *net.Interface) (hi HostInfo, e error) {
 			break
 		}
 
-		probeGatewayNeighbor(logEntry, netif, hi.GatewayIP)
-		logEntry.Debug("waiting for gateway neigh entry", zap.Int("attempt", attempt+1))
-		time.Sleep(time.Second)
+		if attempt+1 < maxGatewayRetries {
+			probeGatewayNeighbor(logEntry, netif, hi.GatewayIP)
+			logEntry.Debug("waiting for gateway neigh entry", zap.Int("attempt", attempt+1))
+			time.Sleep(gatewayRouteRetryDelay)
+		}
 	}
 
 	if needNoARP && gatewayNeigh != nil {
@@ -104,6 +108,38 @@ func gatherHostInfo(netif *net.Interface) (hi HostInfo, e error) {
 	}
 
 	return hi, nil
+}
+
+// defaultGateway returns the lowest-priority IPv6 default route with a
+// gateway. A host can briefly expose both an old and a new RA route while a
+// network service is restarting; selecting by priority avoids nondeterministic
+// interface selection from netlink iteration order.
+func defaultGateway(routes []netlink.Route) netip.Addr {
+	var gateway netip.Addr
+	bestPriority := int(^uint(0) >> 1)
+	for _, route := range routes {
+		maskLen := 0
+		if route.Dst != nil {
+			maskLen, _ = route.Dst.Mask.Size()
+		}
+		if maskLen != 0 || route.Gw == nil {
+			continue
+		}
+		candidate, ok := netip.AddrFromSlice(route.Gw)
+		if !ok {
+			continue
+		}
+		candidate = candidate.Unmap()
+		if !candidate.Is6() {
+			continue
+		}
+		if gateway.IsValid() && route.Priority >= bestPriority {
+			continue
+		}
+		gateway = candidate
+		bestPriority = route.Priority
+	}
+	return gateway
 }
 
 func probeGatewayNeighbor(logEntry *zap.Logger, netif *net.Interface, gateway netip.Addr) {

@@ -12,6 +12,15 @@ import (
 )
 
 func runResponder(ctx context.Context) error {
+	if err := clearResponderReadyFile(); err != nil {
+		return err
+	}
+	defer func() {
+		if err := clearResponderReadyFile(); err != nil {
+			logger.Warn("clear responder ready file failed", zap.Error(err))
+		}
+	}()
+
 	for _, prefix := range currentStaticTargets() {
 		if prefix.Bits() != 128 {
 			return fmt.Errorf("macOS and BSD hosts support static NDP proxy targets only as /128 addresses; use -N or -C for dynamic runtime addresses")
@@ -42,13 +51,22 @@ func runResponder(ctx context.Context) error {
 	if err := responder.Sync(targets); err != nil {
 		return err
 	}
-	targetTicker := time.NewTicker(2 * time.Second)
-	defer targetTicker.Stop()
+	if err := markResponderReady(responder.netif.Name); err != nil {
+		return err
+	}
+
+	var targetTicker *time.Ticker
+	var targetUpdates <-chan time.Time
+	if staticTargetFile != "" {
+		targetTicker = time.NewTicker(targetFileReloadEvery)
+		targetUpdates = targetTicker.C
+		defer targetTicker.Stop()
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-targetTicker.C:
+		case <-targetUpdates:
 			reloadStaticTargetFile()
 			if err := responder.Sync(bsdProxyTargets()); err != nil {
 				logger.Warn("synchronize BSD NDP proxy targets failed", zap.Error(err))
@@ -67,6 +85,10 @@ func bsdProxyTargets() []netip.Addr {
 	for _, prefix := range static {
 		targets = append(targets, prefix.Addr())
 	}
-	targets = append(targets, activeAddressSnapshot()...)
+	for _, address := range activeAddressSnapshot() {
+		if runtimeAddressNeedsAnnouncement(address) {
+			targets = append(targets, address)
+		}
+	}
 	return targets
 }

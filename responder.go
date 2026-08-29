@@ -19,6 +19,10 @@ type responderRuntime struct {
 }
 
 func prepareResponder(candidates []interfaceCandidate) (*responderRuntime, error) {
+	return prepareResponderWith(candidates, tryResponderCandidate)
+}
+
+func prepareResponderWith(candidates []interfaceCandidate, initialize func(interfaceCandidate) (*responderRuntime, error)) (*responderRuntime, error) {
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no candidate network interfaces")
 	}
@@ -26,7 +30,7 @@ func prepareResponder(candidates []interfaceCandidate) (*responderRuntime, error
 	var ready []*responderRuntime
 	var failures []string
 	for _, candidate := range candidates {
-		rt, err := tryResponderCandidate(candidate)
+		rt, err := initialize(candidate)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s(%s): %v", candidate.Interface.Name, candidate.Reason, err))
 			logger.Warn("candidate network interface failed",
@@ -37,18 +41,36 @@ func prepareResponder(candidates []interfaceCandidate) (*responderRuntime, error
 			continue
 		}
 		ready = append(ready, rt)
+
+		// An explicitly requested interface is authoritative once it can be
+		// initialized. A delegated bridge may not have an IPv6 default route of
+		// its own, while the host's default route belongs to another interface.
+		if strings.Contains(candidate.Reason, "requested") {
+			return finalizeResponderRuntime(rt, ready)
+		}
+
+		// For automatic detection, a candidate with an IPv6 default gateway is
+		// preferred and opening every container veth only delays startup.
+		if rt.hi.GatewayIP.IsValid() {
+			return finalizeResponderRuntime(rt, ready)
+		}
 	}
 
 	if len(ready) == 0 {
 		return nil, fmt.Errorf("no candidate network interface could be initialized: %s", strings.Join(failures, "; "))
 	}
 
-	selected := chooseResponderRuntime(ready)
+	return finalizeResponderRuntime(chooseResponderRuntime(ready), ready)
+}
+
+func finalizeResponderRuntime(selected *responderRuntime, ready []*responderRuntime) (*responderRuntime, error) {
 	for _, rt := range ready {
 		if rt == selected {
 			continue
 		}
-		rt.handle.Close()
+		if rt.handle != nil {
+			rt.handle.Close()
+		}
 		logger.Info("candidate network interface initialized but not selected",
 			zap.String("ifname", rt.netif.Name),
 			zap.String("reason", rt.reason),

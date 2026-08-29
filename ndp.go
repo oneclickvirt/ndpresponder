@@ -33,6 +33,43 @@ var packetSerializeOpts = gopacket.SerializeOptions{
 var solicitTypeCode = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeNeighborSolicitation, 0)
 var advertTypeCode = layers.CreateICMPv6TypeCode(layers.ICMPv6TypeNeighborAdvertisement, 0)
 
+// UnsolicitedAdvertisement creates an unsolicited ICMPv6 Neighbor
+// Advertisement for a routed address.  Sending it to ff02::1 teaches the
+// upstream router the address-to-MAC mapping immediately; waiting for the
+// router to issue its own solicitation leaves a several-second loss window
+// after a responder or container restart.
+func UnsolicitedAdvertisement(w gopacket.SerializeBuffer, hi HostInfo, targetIP netip.Addr) error {
+	if !targetIP.IsValid() || !targetIP.Is6() || targetIP.IsUnspecified() || targetIP.IsMulticast() {
+		return fmt.Errorf("invalid IPv6 advertisement target: %s", targetIP)
+	}
+	if len(hi.HostMAC) != 6 {
+		return fmt.Errorf("invalid host MAC address")
+	}
+
+	eth := layers.Ethernet{
+		SrcMAC:       hi.HostMAC,
+		DstMAC:       net.HardwareAddr{0x33, 0x33, 0x00, 0x00, 0x00, 0x01},
+		EthernetType: layers.EthernetTypeIPv6,
+	}
+	dstIP := net.IPv6linklocalallnodes
+	ip6 := layers.IPv6{
+		Version:    6,
+		SrcIP:      targetIP.AsSlice(),
+		DstIP:      dstIP,
+		NextHeader: layers.IPProtocolICMPv6,
+		HopLimit:   math.MaxUint8,
+	}
+	icmp6 := layers.ICMPv6{TypeCode: advertTypeCode}
+	icmp6.SetNetworkLayerForChecksum(&ip6)
+	advert := layers.ICMPv6NeighborAdvertisement{
+		// Router + override; the advertisement is intentionally unsolicited.
+		Flags:         0x80 | 0x20,
+		TargetAddress: targetIP.AsSlice(),
+		Options:       layers.ICMPv6Options{{Type: layers.ICMPv6OptTargetAddress, Data: hi.HostMAC}},
+	}
+	return gopacket.SerializeLayers(w, packetSerializeOpts, &eth, &ip6, &icmp6, &advert)
+}
+
 // Gratuitous creates a gratuitous ICMPv6 neighbor solicitation packet.
 func Gratuitous(w gopacket.SerializeBuffer, hi HostInfo, targetIP netip.Addr) error {
 	ip16 := targetIP.As16()
@@ -166,7 +203,12 @@ func (ns NeighSolicitation) Respond(w gopacket.SerializeBuffer, hi HostInfo) err
 
 // CaptureNeighSolicitation captures ICMPv6 neighbor solicitation packets.
 func CaptureNeighSolicitation(src gopacket.ZeroCopyPacketDataSource) <-chan NeighSolicitation {
-	ch := make(chan NeighSolicitation)
+	// Keep packet capture independent from the responder loop. During
+	// shutdown the loop may stop receiving before the capture goroutine sees
+	// its packet socket close; an unbuffered send would then leak a goroutine
+	// across every restart. Dropping a burst is preferable to blocking the
+	// capture path indefinitely.
+	ch := make(chan NeighSolicitation, 64)
 	go func() {
 		var eth layers.Ethernet
 		var ip6 layers.IPv6
@@ -196,7 +238,10 @@ func CaptureNeighSolicitation(src gopacket.ZeroCopyPacketDataSource) <-chan Neig
 				ns.DestIP = ns.DestIP.Unmap()
 				ns.TargetIP, _ = netip.AddrFromSlice(solicit.TargetAddress)
 				ns.TargetIP = ns.TargetIP.Unmap()
-				ch <- ns
+				select {
+				case ch <- ns:
+				default:
+				}
 			}
 		}
 	}()
