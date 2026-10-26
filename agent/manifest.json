@@ -1,0 +1,11 @@
+{
+  "repository": "oneclickvirt/ndpresponder",
+  "skill_name": "oneclickvirt-ndpresponder",
+  "mcp": true,
+  "files": {
+    "agent/profile.json": "8a8761c8b18d8b8c298071aa8f3fc051f1116132c394a6b30dce9c9e201cd763",
+    "skills/oneclickvirt-ndpresponder/SKILL.md": "5f71aa13c0f70b988ce87b9787b1f579039c906bfba5425680636a667098b68f",
+    "skills/oneclickvirt-ndpresponder/SKILL_ZH.md": "821fa05b2f3580152789582b120660d2c52d92d69513e154464a938538541a0d",
+    "agent/server.py": "d01416e6194095d90bf0d49ea29f7122969f0b74cf4d74ed0b1ce78753423a7d"
+  }
+}
