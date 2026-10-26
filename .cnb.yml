@@ -1,19 +1,39 @@
 main:
-  push: &publish-cnb
-    - name: test-build-publish-multiarch-ndpresponder
-      services:
-        - docker
-      docker:
-        image: cnbcool/default-build-env
-      stages:
-        - name: ensure manifest verification runtime
-          script: command -v python3 || (apt-get update && apt-get install -y --no-install-recommends python3)
-        - name: test and vet the synchronized public source
-          script: |
-            set -eu
-            docker run --rm -v "$PWD:/src" -w /src golang:1.26-alpine sh -ec 'go test ./... && go vet ./...'
-        - name: publish amd64 and ARM64 images to CNB
-          script: bash scripts/publish-cnb.sh
-          timeout: 1h
-  "crontab: 23 4 * * *": *publish-cnb
-  web_trigger_publish_images: *publish-cnb
+  push:
+  - &id001
+    name: test-build-publish-multiarch-ndpresponder
+    services:
+    - docker
+    docker:
+      image: cnbcool/default-build-env
+    stages:
+    - name: ensure manifest verification runtime
+      script: command -v python3 || (apt-get update && apt-get install -y --no-install-recommends
+        python3)
+    - name: test and vet the synchronized public source
+      script: 'set -eu
+
+        docker run --rm -v "$PWD:/src" -w /src golang:1.26-alpine sh -ec ''go test
+        ./... && go vet ./...''
+
+        '
+    - name: publish amd64 and ARM64 images to CNB
+      script: bash scripts/publish-cnb.sh
+      timeout: 1h
+  - &id003
+    name: index-public-documentation
+    stages:
+    - name: Index public documentation
+      type: knowledge:update
+      options:
+        include:
+        - README*.md
+        - skills/oneclickvirt-ndpresponder/SKILL.md
+        - skills/oneclickvirt-ndpresponder/SKILL_ZH.md
+        issueSyncEnabled: false
+        ignoreProcessFailures: false
+  'crontab: 23 4 * * *': &id002
+  - *id001
+  web_trigger_publish_images: *id002
+  api_trigger_knowledge:
+  - *id003
